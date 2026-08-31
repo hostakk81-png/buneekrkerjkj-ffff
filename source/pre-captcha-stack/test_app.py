@@ -102,18 +102,15 @@ class AppTests(unittest.TestCase):
         ])
         self.assertEqual(rich, '<b>Жирно</b> <tg-emoji emoji-id="5210997770567062009">🛒</tg-emoji>')
 
-    def test_each_start_adds_captcha_without_deleting_previous(self):
+    def test_each_start_replaces_captcha(self):
         bot = FakeBot()
-        bot.handle_message({"message_id":700,"chat":{"id":55},"from":{"id":55,"first_name":"User"},"text":"/start"})
-        first_nonce = next(k[1] for k in bot.captchas if k[0] == 55)
-        bot.calls.clear()
-        bot.handle_message({"message_id":701,"chat":{"id":55},"from":{"id":55,"first_name":"User"},"text":"/start"})
-        nonces = {k[1] for k in bot.captchas if k[0] == 55}
-        second_nonce = next(n for n in nonces if n != first_nonce)
+        bot.send_captcha(55)
+        first_nonce = next(k[1] for k in bot.captchas)
+        first_mid = bot.last_captcha[55]
+        bot.send_captcha(55)
+        second_nonce = next(k[1] for k in bot.captchas)
         self.assertNotEqual(first_nonce, second_nonce)
-        self.assertEqual(len(nonces), 2)
-        self.assertFalse(any(m == "deleteMessage" for m,p in bot.calls))
-        self.assertTrue(any(m == "sendMessage" and "Подтверди" in p.get("text","") for m,p in bot.calls))
+        self.assertTrue(any(m == "deleteMessage" and p.get("message_id") == first_mid for m,p in bot.calls))
 
     def test_start_command_message_stays_in_chat(self):
         bot = FakeBot()

@@ -72,7 +72,7 @@ class TelegramBot:
         if not db.rows("SELECT telegram_id FROM admins"):
             for admin_id in configured_admins: db.execute("INSERT OR IGNORE INTO admins(telegram_id) VALUES(?)", (admin_id,))
         self.admin_ids = {int(x["telegram_id"]) for x in db.rows("SELECT telegram_id FROM admins")}
-        self.captchas, self.sessions = {}, {}; self.offset = 0
+        self.captchas, self.last_captcha, self.sessions = {}, {}, {}; self.offset = 0
         self.webhook_secret = hashlib.sha256(self.token.encode()).hexdigest()[:32] if self.token else ""
         self.webhook_path = f"/telegram/webhook/{self.webhook_secret}" if self.webhook_secret else ""
 
@@ -129,8 +129,13 @@ class TelegramBot:
         return self.safe_api("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard(rows))
 
     def send_captcha(self, chat_id):
+        old = self.last_captcha.pop(chat_id, None)
+        if old: self.delete(chat_id, old)
+        for key in [x for x in self.captchas if x[0] == chat_id]: self.captchas.pop(key, None)
         choices, nonce = random.sample(EMOJIS, 5), str(random.randrange(100000, 999999)); target = random.choice(choices); self.captchas[(chat_id, nonce)] = target
-        self.api("sendMessage", chat_id=chat_id, text=f"🤖 <b>Подтверди что ты человек:</b>\n\nВыбери Emoji: {target}", parse_mode="HTML", reply_markup=keyboard([[button(e, f"captcha:{nonce}:{e}") for e in choices]]))
+        result = self.api("sendMessage", chat_id=chat_id, text=f"🤖 <b>Подтверди что ты человек:</b>\n\nВыбери Emoji: {target}", parse_mode="HTML", reply_markup=keyboard([[button(e, f"captcha:{nonce}:{e}") for e in choices]]))
+        mid = (result.get("result") or {}).get("message_id")
+        if mid: self.last_captcha[chat_id] = mid
 
     def send_welcome(self, chat_id):
         operator = self.operator_url()
@@ -312,7 +317,7 @@ class TelegramBot:
             except ValueError:return
             target=self.captchas.get((chat_id,nonce))
             if selected!=target:self.safe_api("answerCallbackQuery",callback_query_id=callback.get("id"),text="Не тот Emoji. Попробуй ещё раз.",show_alert=True);return
-            self.safe_api("answerCallbackQuery",callback_query_id=callback.get("id"),text="Готово!");self.captchas.pop((chat_id,nonce),None);self.delete(chat_id,mid);self.send_welcome(chat_id);return
+            self.safe_api("answerCallbackQuery",callback_query_id=callback.get("id"),text="Готово!");self.captchas.pop((chat_id,nonce),None);self.last_captcha.pop(chat_id,None);self.delete(chat_id,mid);self.send_welcome(chat_id);return
         self.safe_api("answerCallbackQuery",callback_query_id=callback.get("id"))
         if data=="sub:check":
             missing=self.subscribed(uid)
