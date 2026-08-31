@@ -1,0 +1,10 @@
+config.json
+data/*.db
+data/*.db-*
+public/uploads/*
+!public/uploads/.gitkeep
+__pycache__/
+*.pyc
+.env
+.env.*
+!railway.env.example

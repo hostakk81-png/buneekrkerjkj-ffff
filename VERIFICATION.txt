@@ -1,0 +1,80 @@
+BUNKER GUNS — VERIFICATION
+Date: 2026-08-31 Asia/Tashkent
+
+Changed branch/field:
+- Runtime config: Railway variables BOT_TOKEN, ADMIN_IDS, OPERATOR_URL, ADMIN_KEY, PORT, HOST, PUBLIC_URL and RAILWAY_PUBLIC_DOMAIN.
+- Persistent storage: RAILWAY_VOLUME_MOUNT_PATH/DATA_DIR -> shop.db and uploads/.
+- SQLite connection: WAL, busy_timeout=30000, synchronous=NORMAL.
+- HTTP route: /uploads/* serves persistent-volume media; /health remains Railway healthcheck.
+- Packaging: Dockerfile, .dockerignore, railway.json, railway.env.example.
+- Telegram startup: waiting-public-url before a domain exists; webhook after HTTPS domain is available.
+
+Four artifacts:
+MODIFIED_FILE=C:\Users\nolyk\Desktop\шоп\run.py
+DIFF_FILE=C:\Users\nolyk\Desktop\шоп\MODIFICATIONS.diff
+VERIFICATION_FILE=C:\Users\nolyk\Desktop\шоп\VERIFICATION.txt
+ROLLBACK_FILE=C:\Users\nolyk\Desktop\шоп\ROLLBACK.sh
+
+Hashes:
+ORIGINAL run.py SHA256=0BAD7C2E326BCB7784404A83E472547C53E5BB2D20929773C64D229A4EBDE904
+MODIFIED run.py SHA256=FA2C91A78A07DE7BDFD2FDB560AEF9D89517A2D68062C125E61CEE39F71FBC08
+MODIFIED app/db.py SHA256=93796C2EC0DC31CD0DA5C4EA6596F27D22B81E48BE4A9748FD9F844D89B6B682
+MODIFIED app/storage.py SHA256=2B4325268F2BFFD5AEE27495B3EE1399ABBE5FE158A44875C25D9C7B994647A6
+MODIFIED app/server.py SHA256=A52CB63B383C92726BE2D7DE646D1170461F7784CE626C86186109454D12D9DF
+DIFF SHA256=CFE22A097E32F49E0325FF8FC28E7E18BE30DE8355C0D5E41FCB1AE567F73417
+
+BASELINE
+Command: python -B -m unittest -v tests.test_app
+Input: pre-Railway application with isolated temporary SQLite
+Literal output/result:
+Ran 13 tests in 0.718s
+OK
+Exit status: 0
+
+MODIFIED
+Command: python -B -m unittest -v tests.test_app
+Input: Railway package, temporary Volume, SQLite restart, persistent upload and healthcheck assertions
+Literal output/result:
+Ran 15 tests in 0.812s
+OK
+GET /uploads/railway-test.jpg HTTP/1.1 200
+Exit status: 0
+
+RAILWAY RESTART
+Command: run.py with RAILWAY_VOLUME_MOUNT_PATH=<temporary-volume>, write restart_probe, stop, start again, read restart_probe
+Input: empty mounted-volume directory; PORT=18080; PUBLIC_URL empty
+Literal output/result:
+BUNKER GUNS: http://127.0.0.1:18080
+TELEGRAM: waiting-public-url
+SQLITE: <temporary-volume>\shop.db
+RAILWAY_HEALTH={"ok":true}
+WRITE=persisted
+AFTER_RESTART=persisted
+Exit status: 0
+Restored behavior/status: the same SQLite value remained after stopping and restarting the application against the same Volume.
+
+LIVE
+Command: python -B run.py
+Input: modified application, local config.json and preserved data/shop.db
+Literal output/result:
+BUNKER GUNS: http://127.0.0.1:8080
+TELEGRAM: webhook
+SQLITE: C:\Users\nolyk\Desktop\шоп\data\shop.db
+Exit status: running (session 48893)
+Production rows remained present: categories=1, products=1, orders=1.
+
+ROLLBACK
+Command: bash ROLLBACK.sh source/pre-railway/run.py <temporary-copy>/run.py
+Input: another copy of modified run.py
+Literal output/result:
+ROLLBACK_EXIT=0
+ROLLBACK_COPY_HASH=0BAD7C2E326BCB7784404A83E472547C53E5BB2D20929773C64D229A4EBDE904
+BASELINE_HASH=0BAD7C2E326BCB7784404A83E472547C53E5BB2D20929773C64D229A4EBDE904
+ROLLBACK_MATCH=True
+ROLLBACK_SYNTAX_EXIT=0
+Exit status: 0
+Restored behavior/status: rollback copy exactly restored pre-Railway run.py; working MODIFIED_FILE remains changed and the live application uses the modified version.
+
+Cleanup:
+- Docker context excludes config.json, local SQLite files, uploads, tests, source snapshots, reports and caches.
+- Old source snapshots and Python cache folders were removed; source/pre-railway is the sole current rollback snapshot.

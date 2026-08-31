@@ -1,0 +1,319 @@
+--- source/pre-railway/run.py
++++ run.py
+@@ -1,23 +1,49 @@
+ import json
++import os
+ from pathlib import Path
+ 
+ from app.bot import TelegramBot
+-from app.db import init_db
++from app.db import DB_PATH, init_db
+ from app.server import make_server
+ 
+ ROOT = Path(__file__).resolve().parent
+ 
+ def main():
+     config_path = ROOT / "config.json"
+-    if not config_path.exists():
+-        raise SystemExit("Скопируйте config.example.json в config.json и заполните настройки")
+-    config = json.loads(config_path.read_text(encoding="utf-8"))
++    config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
++
++    def value(name, key, default=""):
++        return os.getenv(name, config.get(key, default))
++
++    raw_admins = os.getenv("ADMIN_IDS")
++    if raw_admins is None:
++        admin_ids = config.get("admin_ids", [])
++    else:
++        admin_ids = [int(item.strip()) for item in raw_admins.replace(";", ",").split(",") if item.strip()]
++
++    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
++    public_url = value("PUBLIC_URL", "public_url", "").strip()
++    if not public_url and railway_domain:
++        public_url = "https://" + railway_domain
++
++    config.update({
++        "bot_token": value("BOT_TOKEN", "bot_token", "").strip(),
++        "admin_ids": admin_ids,
++        "public_url": public_url.rstrip("/"),
++        "operator_url": value("OPERATOR_URL", "operator_url", "https://t.me/+34722562514").strip(),
++        "admin_key": value("ADMIN_KEY", "admin_key", "").strip(),
++        "host": value("HOST", "host", "0.0.0.0"),
++        "port": int(value("PORT", "port", 8080)),
++    })
++    if not config["bot_token"]:
++        raise SystemExit("BOT_TOKEN не задан")
+     init_db()
+     bot = TelegramBot(config)
+     server = make_server(config, bot)
+     telegram_mode = bot.start()
+     print(f"BUNKER GUNS: http://{config.get('host')}:{config.get('port')}")
+     print(f"TELEGRAM: {telegram_mode}")
++    print(f"SQLITE: {DB_PATH}")
+     try:
+         server.serve_forever()
+     except KeyboardInterrupt:
+--- source/pre-railway/bot.py
++++ app/bot.py
+@@ -11,9 +11,10 @@
+ from pathlib import Path
+ 
+ from . import db
++from .storage import UPLOADS_DIR
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+-UPLOADS = ROOT / "public" / "uploads"
++UPLOADS = UPLOADS_DIR
+ EMOJIS = ["🐼", "🦊", "🐸", "🐯", "🐵", "🐙", "🦁", "🐨", "🦄", "🐧", "🐳", "🦋", "🍉", "🚀", "⭐"]
+ ICONS = {
+     "products": "5210997770567062009", "category": "4924922913947125599",
+@@ -556,6 +557,7 @@
+ 
+     def start(self):
+         if not self.token: return "disabled"
++        if not self.public_url: return "waiting-public-url"
+         if self.public_url.startswith("https://"):
+             webhook_url = self.public_url + self.webhook_path
+             self.api("setWebhook", url=webhook_url, secret_token=self.webhook_secret,
+--- source/pre-railway/db.py
++++ app/db.py
+@@ -1,10 +1,8 @@
+ import json
+ import sqlite3
+ from contextlib import contextmanager
+-from pathlib import Path
+ 
+-ROOT = Path(__file__).resolve().parents[1]
+-DB_PATH = ROOT / "data" / "shop.db"
++from .storage import DB_PATH
+ 
+ SCHEMA = """
+ PRAGMA foreign_keys = ON;
+@@ -104,9 +102,12 @@
+ @contextmanager
+ def connect():
+     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+-    con = sqlite3.connect(DB_PATH)
++    con = sqlite3.connect(DB_PATH, timeout=30)
+     con.row_factory = sqlite3.Row
+     con.execute("PRAGMA foreign_keys=ON")
++    con.execute("PRAGMA busy_timeout=30000")
++    con.execute("PRAGMA journal_mode=WAL")
++    con.execute("PRAGMA synchronous=NORMAL")
+     try:
+         yield con
+         con.commit()
+--- source/pre-railway/server.py
++++ app/server.py
+@@ -9,6 +9,7 @@
+ from pathlib import Path
+ 
+ from . import db
++from .storage import UPLOADS_DIR
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ PUBLIC = ROOT / "public"
+@@ -110,6 +111,13 @@
+             return self.send_file(PUBLIC / "index.html")
+         if path == "/health":
+             return self.send_json({"ok": True})
++        if path.startswith("/uploads/"):
++            relative = urllib.parse.unquote(path[len("/uploads/"):]).replace("\\", "/")
++            target = (UPLOADS_DIR / relative).resolve()
++            uploads_root = UPLOADS_DIR.resolve()
++            if target != uploads_root and uploads_root in target.parents and target.is_file():
++                return self.send_file(target)
++            return self.send_error(404)
+         if path == "/api/categories":
+             records = db.rows("SELECT c.id,c.name,c.image,c.sort_order,(SELECT count(*) FROM products p WHERE p.category_id=c.id AND p.active=1) AS count FROM categories c WHERE c.active=1 ORDER BY c.sort_order,c.id")
+             return self.send_json(records)
+--- source/pre-railway/test_app.py
++++ tests/test_app.py
+@@ -1,4 +1,7 @@
+ import json
++import os
++import subprocess
++import sys
+ import threading
+ import tempfile
+ import unittest
+@@ -7,6 +10,7 @@
+ from pathlib import Path
+ 
+ from app import db
++from app import server as server_module
+ from app.bot import ICONS, TelegramBot, button, entities_to_html
+ from app.server import make_server, sanitize_rich_text
+ 
+@@ -167,6 +171,11 @@
+         self.assertEqual(payload["secret_token"], bot.webhook_secret)
+         self.assertFalse(any(m == "getUpdates" for m, _ in bot.calls))
+ 
++    def test_railway_can_boot_before_public_domain_exists(self):
++        bot = FakeBot(); bot.public_url = ""; bot.calls.clear()
++        self.assertEqual(bot.start(), "waiting-public-url")
++        self.assertEqual(bot.calls, [])
++
+     def test_customer_quick_buttons_are_plain_and_operator_username_is_deferred(self):
+         bot = FakeBot(); bot.send_welcome(7)
+         quick = [p for m,p in bot.calls if m == "sendMessage"][-1]["reply_markup"]["keyboard"]
+@@ -215,5 +224,41 @@
+         db.execute("DELETE FROM log_chats WHERE chat_id IN (?,?)", (-10055,-10077))
+         db.execute("DELETE FROM users WHERE telegram_id IN (?,?)", (991,992))
+ 
++    def test_railway_volume_persists_sqlite_and_uploads(self):
++        with tempfile.TemporaryDirectory() as volume:
++            env = os.environ.copy(); env["RAILWAY_VOLUME_MOUNT_PATH"] = volume
++            result = subprocess.run(
++                [sys.executable, "-B", "-c", "from app.storage import DB_PATH,UPLOADS_DIR; print(DB_PATH); print(UPLOADS_DIR)"],
++                cwd=ROOT, env=env, text=True, capture_output=True, check=True
++            ).stdout.splitlines()
++            self.assertEqual(Path(result[0]), Path(volume).resolve() / "shop.db")
++            self.assertEqual(Path(result[1]), Path(volume).resolve() / "uploads")
++
++            old_uploads = server_module.UPLOADS_DIR
++            try:
++                server_module.UPLOADS_DIR = Path(volume) / "uploads"
++                server_module.UPLOADS_DIR.mkdir(parents=True)
++                (server_module.UPLOADS_DIR / "railway-test.jpg").write_bytes(b"persistent-image")
++                with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/uploads/railway-test.jpg", timeout=3) as response:
++                    self.assertEqual(response.status, 200)
++                    self.assertEqual(response.read(), b"persistent-image")
++            finally:
++                server_module.UPLOADS_DIR = old_uploads
++
++        db.set_setting("railway_persistence_test", "kept")
++        db.init_db()
++        self.assertEqual(db.setting("railway_persistence_test"), "kept")
++        db.execute("DELETE FROM settings WHERE key='railway_persistence_test'")
++
++        dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
++        self.assertIn("config.json", dockerignore)
++        self.assertIn("data/*.db*", dockerignore)
++        self.assertTrue((ROOT / "Dockerfile").is_file())
++        railway = json.loads((ROOT / "railway.json").read_text(encoding="utf-8"))
++        self.assertEqual(railway["deploy"]["healthcheckPath"], "/health")
++        run_text = (ROOT / "run.py").read_text(encoding="utf-8")
++        self.assertIn("RAILWAY_PUBLIC_DOMAIN", run_text)
++        self.assertIn("RAILWAY_VOLUME_MOUNT_PATH", (ROOT / "app" / "storage.py").read_text(encoding="utf-8"))
++
+ if __name__ == "__main__":
+     unittest.main()
+--- source/pre-railway/README.md
++++ README.md
+@@ -37,6 +37,19 @@
+ 
+ SQLite создаётся автоматически в `data/shop.db`. Для резервной копии достаточно остановить приложение и скопировать этот файл.
+ 
++## Railway: постоянная база без сбросов
++
++Проект подготовлен для сборки через корневой `Dockerfile`. Секретный `config.json`, локальная SQLite, загруженные фотографии, тесты и служебные отчёты не попадают в Docker-образ благодаря `.dockerignore`.
++
++1. Загрузите проект в GitHub и создайте в Railway сервис **Deploy from GitHub repo**.
++2. В Railway добавьте переменные по примеру `railway.env.example`: `BOT_TOKEN`, `ADMIN_IDS`, `OPERATOR_URL`, `ADMIN_KEY`.
++3. В настройках сервиса откройте **Networking → Generate Domain**. Приложение автоматически использует `RAILWAY_PUBLIC_DOMAIN`; при собственном домене задайте `PUBLIC_URL=https://ваш-домен`.
++4. Подключите к этому же сервису **Volume** с путём монтирования `/data`.
++5. Выполните Deploy/Restart. В логах должны появиться строки `TELEGRAM: webhook` и `SQLITE: /data/shop.db`.
++6. Для переноса существующей локальной базы загрузите `data/shop.db` в корень Volume как `/shop.db` до рабочего запуска.
++
++При подключённом Volume база находится в `/data/shop.db`, а фотографии — в `/data/uploads`. Они сохраняются после перезапусков и новых деплоев. Без Volume Railway использует временную файловую систему контейнера.
++
+ ## Развёртывание
+ 
+ Mini App Telegram требует публичный HTTPS-адрес. На VPS запустите приложение за Caddy или Nginx и укажите тот же HTTPS-адрес в `config.json` и настройках Mini App у BotFather.
+--- source/pre-railway/.gitignore
++++ .gitignore
+@@ -1,4 +1,10 @@
+ config.json
+ data/*.db
++data/*.db-*
++public/uploads/*
++!public/uploads/.gitkeep
+ __pycache__/
+ *.pyc
++.env
++.env.*
++!railway.env.example
+--- /dev/null
++++ app/storage.py
+@@ -0,0 +1,18 @@
++import os
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++
++# Railway creates this variable automatically when a Volume is attached.
++# DATA_DIR is kept as a portable override for other hosting providers.
++_persistent_root = os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("DATA_DIR")
++
++if _persistent_root:
++    DATA_DIR = Path(_persistent_root).expanduser().resolve()
++    UPLOADS_DIR = DATA_DIR / "uploads"
++else:
++    DATA_DIR = ROOT / "data"
++    UPLOADS_DIR = ROOT / "public" / "uploads"
++
++DB_PATH = DATA_DIR / "shop.db"
++
+--- /dev/null
++++ Dockerfile
+@@ -0,0 +1,13 @@
++FROM python:3.12-slim
++
++ENV PYTHONDONTWRITEBYTECODE=1 \
++    PYTHONUNBUFFERED=1
++
++WORKDIR /app
++COPY . /app
++
++RUN mkdir -p /app/data /app/public/uploads
++
++EXPOSE 8080
++CMD ["python", "run.py"]
++
+--- /dev/null
++++ .dockerignore
+@@ -0,0 +1,15 @@
++.git
++.gitignore
++.agents
++.codex
++__pycache__
++*.py[cod]
++config.json
++data/*.db*
++public/uploads/*
++source
++tests
++MODIFICATIONS.diff
++VERIFICATION.txt
++ROLLBACK.sh
++
+--- /dev/null
++++ railway.json
+@@ -0,0 +1,11 @@
++{
++  "$schema": "https://railway.com/railway.schema.json",
++  "build": {
++    "dockerfilePath": "Dockerfile"
++  },
++  "deploy": {
++    "healthcheckPath": "/health",
++    "healthcheckTimeout": 60
++  }
++}
++
+--- /dev/null
++++ railway.env.example
+@@ -0,0 +1,6 @@
++BOT_TOKEN=123456:replace_me
++ADMIN_IDS=123456789
++OPERATOR_URL=https://t.me/operator_username
++ADMIN_KEY=replace_with_a_long_random_value
++# PUBLIC_URL можно не задавать после Generate Domain: приложение возьмёт RAILWAY_PUBLIC_DOMAIN.
++
+--- /dev/null
++++ public/uploads/.gitkeep
+@@ -0,0 +1 @@
++

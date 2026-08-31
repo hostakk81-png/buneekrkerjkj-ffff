@@ -1,0 +1,15 @@
+.git
+.gitignore
+.agents
+.codex
+__pycache__
+*.py[cod]
+config.json
+data/*.db*
+public/uploads/*
+source
+tests
+MODIFICATIONS.diff
+VERIFICATION.txt
+ROLLBACK.sh
+
