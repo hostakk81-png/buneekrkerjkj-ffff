@@ -1,379 +1,180 @@
 
-diff --git a/source/pre-catalog-import/bot.py b/app/bot.py
-index 20eb2fc..bc3295a 100644
---- a/source/pre-catalog-import/bot.py
+diff --git a/source/pre-review-import/index.html b/public/index.html
+index 5432567..79a821b 100644
+--- a/source/pre-review-import/index.html
++++ b/public/index.html
+@@ -2198,8 +2198,9 @@ body::after{
+   function operatorMessageUrl(text) {
+     try {
+       const url = new URL(OPERATOR_URL);
+-      url.searchParams.set('text', text);
+-      return url.toString();
++      url.searchParams.delete('text');
++      const base = url.toString();
++      return base + (url.search ? '&' : '?') + 'text=' + encodeURIComponent(text);
+     } catch (_) {
+       return OPERATOR_URL + (OPERATOR_URL.includes('?') ? '&' : '?') + 'text=' + encodeURIComponent(text);
+     }
+diff --git a/source/pre-review-import/bot.py b/app/bot.py
+index bc3295a..21ed9b8 100644
+--- a/source/pre-review-import/bot.py
 +++ b/app/bot.py
-@@ -73,6 +73,7 @@ class TelegramBot:
-             for admin_id in configured_admins: db.execute("INSERT OR IGNORE INTO admins(telegram_id) VALUES(?)", (admin_id,))
+@@ -74,6 +74,7 @@ class TelegramBot:
          self.admin_ids = {int(x["telegram_id"]) for x in db.rows("SELECT telegram_id FROM admins")}
          self.captchas, self.sessions = {}, {}; self.offset = 0
-+        self.catalog_import_running = False
+         self.catalog_import_running = False
++        self.review_import_running = False
          self.webhook_secret = hashlib.sha256(self.token.encode()).hexdigest()[:32] if self.token else ""
          self.webhook_path = f"/telegram/webhook/{self.webhook_secret}" if self.webhook_secret else ""
  
-@@ -188,9 +189,38 @@ class TelegramBot:
-     def product_categories(self, uid, callback=None):
-         cats = db.rows("SELECT c.*,(SELECT count(*) FROM products p WHERE p.category_id=c.id) count FROM categories c ORDER BY sort_order,id")
-         rows = [[button(f"• {c['name']} · {c['count']}", f"prod:list:{c['id']}:0", icon=ICONS["category"])] for c in cats]
--        rows += [[button("• Добавить категорию", "cat:new", icon=ICONS["add"], style="success")], [button("• Управление категориями", "cat:list", icon=ICONS["category"])], [button("• Назад", "adm:home", icon=ICONS["back"])]]
-+        rows += [[button("• Добавить категорию", "cat:new", icon=ICONS["add"], style="success")], [button("• Управление категориями", "cat:list", icon=ICONS["category"])], [button("• Импортировать каталог", "catalog:import", icon=ICONS["refresh"])], [button("• Назад", "adm:home", icon=ICONS["back"])]]
-         self.panel(uid, "<b>Управление товарами •</b>\n\nВыберите категорию:", rows, callback)
+@@ -173,9 +174,30 @@ class TelegramBot:
+         if page > 0: nav.append(button("• Назад", f"adm:reviews:{page-1}", icon=ICONS["back"]))
+         nav.append(button(f"{page+1}/{pages}", "noop"))
+         if page + 1 < pages: nav.append(button("• Далее", f"adm:reviews:{page+1}", icon=ICONS["next"]))
+-        rows += [nav, [button("• Добавить отзыв", "review:new", icon=ICONS["add"], style="success")], [button("• В меню", "adm:home", icon=ICONS["back"])]]
++        rows += [nav, [button("• Добавить отзыв", "review:new", icon=ICONS["add"], style="success")], [button("• Импортировать отзывы", "review:import", icon=ICONS["refresh"])], [button("• В меню", "adm:home", icon=ICONS["back"])]]
+         self.panel(uid, f"<b>Отзывы</b>\n\nВсего: <b>{total}</b>", rows, callback)
  
-+    def run_catalog_import(self, uid):
++    def run_review_import(self, uid):
 +        from .importer import CatalogImporter
 +        last = {"phase": "", "done": -1}
-+
 +        def progress(phase, done, total):
-+            # Не редактируем сообщение на каждой фотографии: Telegram ограничивает частоту запросов.
-+            if phase == last["phase"] and done != total and done - last["done"] < 100:
-+                return
++            if phase == last["phase"] and done != total and done - last["done"] < 50: return
 +            last.update(phase=phase, done=done)
-+            self.panel(uid, f"<b>Импорт каталога •</b>\n\n{html.escape(phase)}: <b>{done}/{total}</b>\n\nМожно закрыть панель — импорт продолжится.",
-+                       [[button("• Назад", "adm:products", icon=ICONS["back"])]] )
-+
++            self.panel(uid, f"<b>Импорт отзывов •</b>\n\n{html.escape(phase)}: <b>{done}/{total}</b>", [[button("• Назад", "adm:reviews:0", icon=ICONS["back"])]] )
 +        try:
-+            result = CatalogImporter(progress=progress).import_all()
-+            text = ("<b>Каталог импортирован •</b>\n\n"
-+                    f"Категорий: <b>{result['categories']}</b>\n"
-+                    f"Подкатегорий: <b>{result['subcategories']}</b>\n"
-+                    f"Товаров: <b>{result['products']}</b>\n"
++            result = CatalogImporter(progress=progress).import_reviews()
++            text = ("<b>Отзывы импортированы •</b>\n\n"
++                    f"Получено: <b>{result['reviews']}</b>\n"
 +                    f"Добавлено: <b>{result['created']}</b>\n"
 +                    f"Обновлено: <b>{result['updated']}</b>\n"
-+                    f"Ошибок фото: <b>{result['image_errors']}</b>")
-+            self.panel(uid, text, [[button("• К товарам", "adm:products", icon=ICONS["products"])]])
-+            self.log_event("Каталог импортирован", text, uid)
++                    f"Ошибок медиа: <b>{result['image_errors']}</b>")
++            self.panel(uid, text, [[button("• К отзывам", "adm:reviews:0", icon=ICONS["star"])]] )
++            self.log_event("Отзывы импортированы", text, uid)
 +        except Exception as exc:
-+            self.panel(uid, f"<b>Ошибка импорта •</b>\n\n<code>{html.escape(str(exc))}</code>",
-+                       [[button("• Назад", "adm:products", icon=ICONS["back"])]] )
++            self.panel(uid, f"<b>Ошибка импорта отзывов •</b>\n\n<code>{html.escape(str(exc))}</code>", [[button("• Назад", "adm:reviews:0", icon=ICONS["back"])]] )
 +        finally:
-+            self.catalog_import_running = False
++            self.review_import_running = False
 +
-     def category_list(self, uid, callback=None):
-         cats = db.rows("SELECT * FROM categories ORDER BY sort_order,id"); rows = [[button(f"• {c['name']} · изменить", f"cat:open:{c['id']}", icon=ICONS["category"])] for c in cats]
-         rows += [[button("• Добавить категорию", "cat:new", icon=ICONS["add"], style="success")], [button("• Назад", "adm:products", icon=ICONS["back"])]]
-@@ -326,6 +356,13 @@ class TelegramBot:
-         s.pop("mode", None)
-         routes={"adm:home":lambda:self.admin_home(uid,callback),"adm:products":lambda:self.product_categories(uid,callback),"adm:stats":lambda:self.stats(uid,callback),"adm:broadcast":lambda:self.broadcast_menu(uid,callback),"adm:settings":lambda:self.settings_menu(uid,callback),"cat:list":lambda:self.category_list(uid,callback),"set:channels":lambda:self.channels_menu(uid,callback),"set:logs":lambda:self.logs_menu(uid,callback),"set:admins":lambda:self.admins_menu(uid,callback)}
-         if data in routes:return routes[data]()
-+        if data=="catalog:import":
-+            if self.catalog_import_running:
-+                return self.panel(uid,"<b>Импорт каталога •</b>\n\nИмпорт уже выполняется.",[[button("• Назад","adm:products",icon=ICONS["back"]) ]],callback)
-+            self.catalog_import_running=True
-+            self.panel(uid,"<b>Импорт каталога •</b>\n\nПодключаюсь к источнику…",[[button("• Назад","adm:products",icon=ICONS["back"]) ]],callback)
-+            threading.Thread(target=self.run_catalog_import,args=(uid,),daemon=True,name="catalog-import").start()
+     def review_editor(self, uid, callback, rid):
+         review = db.row("SELECT * FROM reviews WHERE id=?", (rid,))
+         if not review: return self.reviews_page(uid, callback)
+@@ -408,6 +430,13 @@ class TelegramBot:
+         if data=="review:new":
+             rows=[[button(f"• {n} звезд",f"review:stars:{n}",icon=ICONS["star"])] for n in range(1,6)]+[[button("• Назад","adm:reviews:0",icon=ICONS["back"])]]
+             return self.panel(uid,"<b>Новый отзыв</b>\n\nВыберите оценку от 1 до 5:",rows,callback)
++        if data=="review:import":
++            if self.review_import_running:
++                return self.panel(uid,"<b>Импорт отзывов •</b>\n\nИмпорт уже выполняется.",[[button("• Назад","adm:reviews:0",icon=ICONS["back"]) ]],callback)
++            self.review_import_running=True
++            self.panel(uid,"<b>Импорт отзывов •</b>\n\nПодключаюсь к источнику…",[[button("• Назад","adm:reviews:0",icon=ICONS["back"]) ]],callback)
++            threading.Thread(target=self.run_review_import,args=(uid,),daemon=True,name="review-import").start()
 +            return
-         if data.startswith("adm:users:"):return self.users_page(uid,callback,int(data.rsplit(":",1)[1]))
-         if data.startswith("adm:reviews:"):return self.reviews_page(uid,callback,int(data.rsplit(":",1)[1]))
-         if data=="cat:new":return self.prompt(uid,callback,"cat_new_name","Отправьте название новой категории.","cat:list")
-diff --git a/source/pre-catalog-import/db.py b/app/db.py
-index e5b8c38..6889de0 100644
---- a/source/pre-catalog-import/db.py
-+++ b/app/db.py
-@@ -81,6 +81,14 @@ CREATE TABLE IF NOT EXISTS admins (
-   added_by INTEGER NOT NULL DEFAULT 0,
-   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
- );
-+CREATE TABLE IF NOT EXISTS import_sources (
-+  source_base TEXT NOT NULL,
-+  entity_type TEXT NOT NULL,
-+  source_id TEXT NOT NULL,
-+  local_id INTEGER NOT NULL,
-+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-+  PRIMARY KEY(source_base, entity_type, source_id)
-+);
- CREATE TABLE IF NOT EXISTS admin_dialogs (
-   id INTEGER PRIMARY KEY AUTOINCREMENT,
-   user_id INTEGER NOT NULL,
-diff --git a/source/pre-catalog-import/README.md b/README.md
-index 9b0776e..1594fc7 100644
---- a/source/pre-catalog-import/README.md
-+++ b/README.md
-@@ -11,7 +11,7 @@
- 5. Замените `admin_key` на длинную случайную строку.
- 6. Запустите `python run.py` на сервере с Python 3.11+.
+         if data.startswith("review:stars:"):
+             stars=max(1,min(5,int(data.rsplit(":",1)[1])))
+             return self.prompt(uid,callback,"review_text","Отправьте текст отзыва. Жирный, курсив и Premium Emoji сохранятся автоматически.","adm:reviews:0",review_stars=stars)
+diff --git a/source/pre-review-import/importer.py b/app/importer.py
+index 9ab9573..99910ae 100644
+--- a/source/pre-review-import/importer.py
++++ b/app/importer.py
+@@ -192,6 +192,42 @@ class CatalogImporter:
+         return {"categories": len(categories), "subcategories": len(subcategories), "products": total,
+                 "created": created, "updated": updated, "skipped": skipped, "image_errors": self.image_errors}
  
--После каждого `/start` бот создаёт новую капчу из пяти Emoji, удаляет предыдущую капчу и команду пользователя, а после верного ответа отправляет каталог с быстрыми кнопками. Команда `/admin` открывает inline-админку прямо в чате только пользователям из `admin_ids`.
-+После каждого `/start` бот создаёт отдельную новую капчу из пяти Emoji, не удаляя команду и предыдущие капчи. После верного ответа выбранная капча исчезает, и бот отправляет каталог с быстрыми кнопками. Команда `/admin` открывает inline-админку прямо в чате только пользователям из `admin_ids`.
- 
- ## Админ-панель в боте
- 
-@@ -28,6 +28,10 @@
- - оператор, PIN каталога и до 15 обязательных каналов подписки.
- - несколько чатов логов с включением/выключением: новые пользователи, заказы, категории, товары, отзывы и действия администраторов;
- - управление администраторами по Telegram ID или username прямо из настроек бота.
-+- массовый импорт категорий, подкатегорий, товаров и до 10 фотографий товара с `bunkerguns.pro`.
++    def import_reviews(self):
++        db.init_db()
++        from .server import sanitize_rich_text
++        self.progress("Получение отзывов", 0, 1)
++        reviews = self.fetch_json("/api/reviews")
++        media_values = []
++        for item in reviews:
++            media_values.extend((item.get("images") or ([item.get("image")] if item.get("image") else []))[:10])
++            media_values.extend((item.get("videos") or [])[:10])
++        downloaded = self.download_many(media_values)
 +
-+Для переноса каталога откройте `/admin` → «Управление товарами» → «Импортировать каталог». Повторный запуск синхронизирует названия, цены, описания и фотографии без создания дублей.
-+По умолчанию фотографии подключаются по исходным HTTPS-адресам, поэтому Railway Volume не раздувается на тысячи файлов. Для полной локальной копии изображений задайте `IMPORT_MIRROR_IMAGES=1`; уже скачанные файлы повторно не загружаются.
++        created = updated = 0
++        used_review_ids = set()
++        total = len(reviews)
++        for index, item in enumerate(reviews, 1):
++            source_id = str(item["id"])
++            local_id = self.source_map("review", source_id)
++            if local_id in used_review_ids:
++                local_id = None
++            images = [downloaded.get(url, self.media_url(url)) for url in (item.get("images") or ([item.get("image")] if item.get("image") else []))[:10]]
++            videos = [downloaded.get(url, self.media_url(url)) for url in (item.get("videos") or [])[:10]]
++            values = (int(item.get("userId") or 0), sanitize_rich_text(str(item.get("text") or "")),
++                      max(1, min(5, int(item.get("stars") or 5))), json.dumps(images, ensure_ascii=False),
++                      json.dumps(videos, ensure_ascii=False), 1, str(item.get("created_at") or ""))
++            if local_id:
++                db.execute("UPDATE reviews SET user_id=?,text=?,stars=?,images_json=?,videos_json=?,active=?,created_at=COALESCE(NULLIF(?,''),created_at) WHERE id=?", values + (local_id,))
++                updated += 1
++            else:
++                local_id = db.execute("INSERT INTO reviews(user_id,text,stars,images_json,videos_json,active,created_at) VALUES(?,?,?,?,?,?,COALESCE(NULLIF(?,''),CURRENT_TIMESTAMP))", values)
++                created += 1
++            self.save_map("review", source_id, local_id)
++            used_review_ids.add(local_id)
++            if index == total or index % 50 == 0:
++                self.progress("Отзывы", index, total)
++        return {"reviews": total, "created": created, "updated": updated, "image_errors": self.image_errors}
++
  
- Чтобы подключить логи: `/admin` → «Настройки» → «Чаты логов» → «Добавить чат логов». Telegram предложит выбрать группу или канал и выдать боту права администратора; после подключения бот напишет в выбранный чат подтверждение.
- 
-diff --git a/source/pre-catalog-import/test_app.py b/tests/test_app.py
-index 1276983..64712ba 100644
---- a/source/pre-catalog-import/test_app.py
+ def main():
+     importer = CatalogImporter(progress=lambda phase, done, total: print(f"{phase}: {done}/{total}", flush=True))
+diff --git a/source/pre-review-import/test_app.py b/tests/test_app.py
+index 64712ba..c507fb6 100644
+--- a/source/pre-review-import/test_app.py
 +++ b/tests/test_app.py
-@@ -12,6 +12,7 @@ from pathlib import Path
- from app import db
- from app import server as server_module
- from app.bot import ICONS, TelegramBot, button, entities_to_html
-+from app.importer import CatalogImporter
- from app.server import make_server, sanitize_rich_text
+@@ -82,6 +82,8 @@ class AppTests(unittest.TestCase):
+         self.assertIn("localStorage.setItem(DELIVERY_DATA_KEY", text)
+         self.assertIn("const tgUrl = operatorMessageUrl(msgText)", text)
+         self.assertIn("const url = operatorMessageUrl(msg)", text)
++        self.assertNotIn("url.searchParams.set('text', text)", text)
++        self.assertIn("'text=' + encodeURIComponent(text)", text)
+         self.assertIn("stars(r.stars)", text)
+         load_block = text[text.index("async function loadCategories"):text.index("function pluralItems")]
+         self.assertNotIn("apiFetch('/api/products')", load_block)
+@@ -175,6 +177,32 @@ class AppTests(unittest.TestCase):
+         db.execute("DELETE FROM categories WHERE name='Импорт'")
+         db.execute("DELETE FROM import_sources WHERE source_base='https://fixture.example'")
  
- ROOT = Path(__file__).resolve().parents[1]
-@@ -141,6 +142,39 @@ class AppTests(unittest.TestCase):
-                 self.assertTrue(item["text"].startswith("• "))
-                 self.assertIn("icon_custom_emoji_id", item)
- 
-+    def test_catalog_import_button_and_idempotent_import(self):
-+        bot = FakeBot(); bot.admin_ids = {1}; bot.product_categories(1)
++    def test_review_import_button_and_idempotent_import(self):
++        bot = FakeBot(); bot.admin_ids = {1}; bot.reviews_page(1)
 +        sent = [p for m,p in bot.calls if m == "sendMessage"][-1]
 +        callbacks = [b.get("callback_data") for row in sent["reply_markup"]["inline_keyboard"] for b in row]
-+        self.assertIn("catalog:import", callbacks)
++        self.assertIn("review:import", callbacks)
 +
-+        class FixtureImporter(CatalogImporter):
++        class FixtureReviewImporter(CatalogImporter):
 +            def fetch_json(self, path):
-+                if path == "/api/categories": return [{"id":"c1","name":"Импорт","image":"/c.jpg"}]
-+                if path == "/api/subcategories": return [{"id":"s1","categoryId":"c1","name":"Пистолеты","image":"/s.jpg"}]
-+                if path == "/api/products": return [{"id":"p1","categoryId":"c1","name":"Модель","price":100,"description":"<b>Тест</b><script>x</script>","images":["/1.jpg","/2.jpg"]},{"id":"p2","categoryId":"c1","name":"Модель","price":200,"description":"Дубль названия","images":["/3.jpg"]}]
-+                if path.startswith("/api/products?subcategoryId="): return [{"id":"p1"},{"id":"p2"}]
-+                raise AssertionError(path)
++                self.assert_path = path
++                return [{"id":"r1","userId":42,"text":"<b>Отлично</b><script>x</script>","images":["/review.jpg"],"videos":["/review.mp4"],"created_at":"2026-08-28T10:43:17Z"}]
 +            def download_many(self, urls):
-+                return {url: "/uploads/fixture-" + Path(url).name for url in urls}
++                return {url: "https://fixture.example" + url for url in urls}
 +
-+        importer = FixtureImporter(source="https://fixture.example")
-+        first = importer.import_all(); second = importer.import_all()
-+        self.assertEqual(first["created"], 2)
++        importer = FixtureReviewImporter(source="https://fixture.example")
++        first = importer.import_reviews(); second = importer.import_reviews()
++        self.assertEqual(first["created"], 1)
 +        self.assertEqual(second["created"], 0)
-+        self.assertEqual(second["updated"], 2)
-+        products = db.rows("SELECT * FROM products WHERE name='Модель' ORDER BY price")
-+        product = products[0]
-+        subcategory = db.row("SELECT * FROM subcategories WHERE name='Пистолеты'")
-+        self.assertEqual(len(products), 2)
-+        self.assertEqual(product["subcategory_id"], subcategory["id"])
-+        self.assertEqual(len(json.loads(product["images_json"])), 2)
-+        self.assertEqual(product["description_html"], "<b>Тест</b>")
-+        db.execute("DELETE FROM products WHERE name='Модель'")
-+        db.execute("DELETE FROM subcategories WHERE name='Пистолеты'")
-+        db.execute("DELETE FROM categories WHERE name='Импорт'")
-+        db.execute("DELETE FROM import_sources WHERE source_base='https://fixture.example'")
++        self.assertEqual(second["updated"], 1)
++        review = db.row("SELECT * FROM reviews WHERE user_id=42")
++        self.assertEqual(review["text"], "<b>Отлично</b>")
++        self.assertEqual(review["stars"], 5)
++        self.assertEqual(json.loads(review["images_json"]), ["https://fixture.example/review.jpg"])
++        self.assertEqual(json.loads(review["videos_json"]), ["https://fixture.example/review.mp4"])
++        db.execute("DELETE FROM reviews WHERE id=?", (review["id"],))
++        db.execute("DELETE FROM import_sources WHERE source_base='https://fixture.example' AND entity_type='review'")
 +
      def test_category_requires_photo_and_review_supports_stars_rich_text_photo(self):
          bot = FakeBot(); bot.admin_ids = {1}
          before = db.row("SELECT count(*) n FROM categories")["n"]
-@@ -231,7 +265,7 @@ class AppTests(unittest.TestCase):
-         with tempfile.TemporaryDirectory() as volume:
-             env = os.environ.copy(); env["RAILWAY_VOLUME_MOUNT_PATH"] = volume
-             result = subprocess.run(
--                [sys.executable, "-B", "-c", "from app.storage import DB_PATH,UPLOADS_DIR; print(DB_PATH); print(UPLOADS_DIR)"],
-+                [sys.executable, "-B", "-c", "import sys;sys.path.insert(0,'.');from app.storage import DB_PATH,UPLOADS_DIR;print(DB_PATH);print(UPLOADS_DIR)"],
-                 cwd=ROOT, env=env, text=True, capture_output=True, check=True
-             ).stdout.splitlines()
-             self.assertEqual(Path(result[0]), Path(volume).resolve() / "shop.db")
-diff --git a/app/importer.py b/app/importer.py
-new file mode 100644
-index 0000000..9ab9573
---- /dev/null
-+++ b/app/importer.py
-@@ -0,0 +1,202 @@
-+import hashlib
-+import http.client
-+import json
-+import mimetypes
-+import os
-+import time
-+import urllib.parse
-+import urllib.request
-+import threading
-+from concurrent.futures import ThreadPoolExecutor, as_completed
-+from pathlib import Path
-+
-+from . import db
-+from .storage import UPLOADS_DIR
-+
-+DEFAULT_SOURCE = "https://bunkerguns.pro"
-+
-+
-+class CatalogImporter:
-+    def __init__(self, source=DEFAULT_SOURCE, workers=24, progress=None, mirror_images=None):
-+        self.source = source.rstrip("/")
-+        self.workers = max(1, min(32, int(workers)))
-+        self.progress = progress or (lambda phase, done, total: None)
-+        self.mirror_images = (str(os.getenv("IMPORT_MIRROR_IMAGES", "")).lower() in {"1","true","yes"}) if mirror_images is None else bool(mirror_images)
-+        self.image_errors = 0
-+        self._image_error_lock = threading.Lock()
-+        self._connections = threading.local()
-+
-+    def note_image_error(self):
-+        with self._image_error_lock:
-+            self.image_errors += 1
-+
-+    def fetch_json(self, path):
-+        url = urllib.parse.urljoin(self.source + "/", path.lstrip("/"))
-+        request = urllib.request.Request(url, headers={"User-Agent": "BunkerGuns-Catalog-Importer/1.0", "Accept": "application/json"})
-+        last = None
-+        for attempt in range(3):
-+            try:
-+                with urllib.request.urlopen(request, timeout=90) as response:
-+                    return json.loads(response.read().decode("utf-8"))
-+            except Exception as exc:
-+                last = exc
-+                if attempt < 2: time.sleep(1.5 * (attempt + 1))
-+        raise RuntimeError(f"Не удалось получить {url}: {last}")
-+
-+    def source_map(self, entity_type, source_id):
-+        found = db.row("SELECT local_id FROM import_sources WHERE source_base=? AND entity_type=? AND source_id=?", (self.source, entity_type, str(source_id)))
-+        return int(found["local_id"]) if found else None
-+
-+    def save_map(self, entity_type, source_id, local_id):
-+        db.execute("""INSERT INTO import_sources(source_base,entity_type,source_id,local_id) VALUES(?,?,?,?)
-+                      ON CONFLICT(source_base,entity_type,source_id) DO UPDATE SET local_id=excluded.local_id,updated_at=CURRENT_TIMESTAMP""",
-+                   (self.source, entity_type, str(source_id), int(local_id)))
-+
-+    def media_url(self, value):
-+        return urllib.parse.urljoin(self.source + "/", str(value or ""))
-+
-+    def read_media(self, absolute):
-+        """Скачивает файл через постоянное HTTPS-соединение рабочего потока."""
-+        parsed = urllib.parse.urlsplit(absolute)
-+        source = urllib.parse.urlsplit(self.source)
-+        if parsed.scheme == "https" and parsed.netloc == source.netloc:
-+            connection = getattr(self._connections, "https", None)
-+            if connection is None:
-+                connection = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=45)
-+                self._connections.https = connection
-+            path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
-+            try:
-+                connection.request("GET", path, headers={"User-Agent":"Mozilla/5.0", "Referer":self.source + "/", "Connection":"keep-alive"})
-+                response = connection.getresponse(); payload = response.read()
-+                if response.status >= 400: raise RuntimeError(f"HTTP {response.status}")
-+                return payload
-+            except Exception:
-+                try: connection.close()
-+                except Exception: pass
-+                self._connections.https = None
-+                raise
-+        request = urllib.request.Request(absolute, headers={"User-Agent": "Mozilla/5.0", "Referer": self.source + "/"})
-+        with urllib.request.urlopen(request, timeout=45) as response:
-+            return response.read()
-+
-+    def download_one(self, value):
-+        if not value: return ""
-+        absolute = self.media_url(value)
-+        suffix = Path(urllib.parse.urlsplit(absolute).path).suffix.lower()
-+        if not suffix or len(suffix) > 8: suffix = mimetypes.guess_extension("image/jpeg") or ".jpg"
-+        name = "import-" + hashlib.sha256(absolute.encode()).hexdigest()[:24] + suffix
-+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-+        target = UPLOADS_DIR / name
-+        if target.is_file() and target.stat().st_size > 0: return "/uploads/" + name
-+        temporary = target.with_suffix(target.suffix + ".part")
-+        for attempt in range(3):
-+            try:
-+                temporary.write_bytes(self.read_media(absolute))
-+                os.replace(temporary, target)
-+                return "/uploads/" + name
-+            except Exception:
-+                if temporary.exists(): temporary.unlink()
-+                if attempt < 2: time.sleep(.5 * (attempt + 1))
-+        self.note_image_error()
-+        return absolute
-+
-+    def cached_or_remote(self, value):
-+        absolute = self.media_url(value)
-+        suffix = Path(urllib.parse.urlsplit(absolute).path).suffix.lower()
-+        if not suffix or len(suffix) > 8: suffix = ".jpg"
-+        target = UPLOADS_DIR / ("import-" + hashlib.sha256(absolute.encode()).hexdigest()[:24] + suffix)
-+        return "/uploads/" + target.name if target.is_file() and target.stat().st_size > 0 else absolute
-+
-+    def download_many(self, urls):
-+        unique = list(dict.fromkeys(str(x) for x in urls if x))
-+        if not self.mirror_images:
-+            self.progress("Фотографии", len(unique), len(unique))
-+            return {url: self.cached_or_remote(url) for url in unique}
-+        result = {}
-+        total = len(unique)
-+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-+            futures = {pool.submit(self.download_one, url): url for url in unique}
-+            for done, future in enumerate(as_completed(futures), 1):
-+                source_url = futures[future]
-+                try: result[source_url] = future.result()
-+                except Exception: result[source_url] = self.media_url(source_url); self.note_image_error()
-+                if done == total or done % 50 == 0: self.progress("Фотографии", done, total)
-+        return result
-+
-+    def import_all(self):
-+        db.init_db()
-+        from .server import sanitize_rich_text
-+        self.progress("Получение каталога", 0, 1)
-+        categories = self.fetch_json("/api/categories")
-+        subcategories = self.fetch_json("/api/subcategories")
-+        products = self.fetch_json("/api/products")
-+
-+        product_subcategory = {}
-+        for sub in subcategories:
-+            for product in self.fetch_json("/api/products?subcategoryId=" + urllib.parse.quote(str(sub["id"]))):
-+                product_subcategory[str(product["id"])] = str(sub["id"])
-+
-+        media_values = []
-+        for item in categories + subcategories:
-+            if item.get("image"): media_values.append(item["image"])
-+        for product in products:
-+            media_values.extend((product.get("images") or ([product.get("image")] if product.get("image") else []))[:10])
-+        downloaded = self.download_many(media_values)
-+
-+        category_ids = {}
-+        for item in categories:
-+            source_id = str(item["id"]); local_id = self.source_map("category", source_id)
-+            if not local_id:
-+                found = db.row("SELECT id FROM categories WHERE lower(name)=lower(?) ORDER BY id LIMIT 1", (item["name"],))
-+                local_id = int(found["id"]) if found else db.execute("INSERT INTO categories(name,image,active) VALUES(?,?,1)", (item["name"], downloaded.get(item.get("image"), "")))
-+            db.execute("UPDATE categories SET name=?,image=?,active=1 WHERE id=?", (item["name"], downloaded.get(item.get("image"), item.get("image") or ""), local_id))
-+            self.save_map("category", source_id, local_id); category_ids[source_id] = local_id
-+
-+        subcategory_ids = {}
-+        for item in subcategories:
-+            source_id = str(item["id"]); category_id = category_ids.get(str(item.get("categoryId")))
-+            if not category_id: continue
-+            local_id = self.source_map("subcategory", source_id)
-+            if not local_id:
-+                found = db.row("SELECT id FROM subcategories WHERE category_id=? AND lower(name)=lower(?) ORDER BY id LIMIT 1", (category_id, item["name"]))
-+                local_id = int(found["id"]) if found else db.execute("INSERT INTO subcategories(category_id,name,image,active) VALUES(?,?,?,1)", (category_id, item["name"], downloaded.get(item.get("image"), "")))
-+            db.execute("UPDATE subcategories SET category_id=?,name=?,image=?,active=1 WHERE id=?", (category_id, item["name"], downloaded.get(item.get("image"), item.get("image") or ""), local_id))
-+            self.save_map("subcategory", source_id, local_id); subcategory_ids[source_id] = local_id
-+
-+        created = updated = skipped = 0
-+        used_product_ids = set()
-+        total = len(products)
-+        for index, item in enumerate(products, 1):
-+            source_id = str(item["id"]); category_id = category_ids.get(str(item.get("categoryId")))
-+            if not category_id: skipped += 1; continue
-+            subcategory_id = subcategory_ids.get(product_subcategory.get(source_id, ""))
-+            local_id = self.source_map("product", source_id)
-+            if local_id in used_product_ids:
-+                local_id = None
-+            if not local_id:
-+                found = db.row("SELECT id FROM products WHERE category_id=? AND lower(name)=lower(?) ORDER BY id LIMIT 1", (category_id, item["name"]))
-+                candidate = int(found["id"]) if found else None
-+                local_id = candidate if candidate not in used_product_ids else None
-+            source_images = (item.get("images") or ([item.get("image")] if item.get("image") else []))[:10]
-+            images = [downloaded.get(url, self.media_url(url)) for url in source_images]
-+            description = sanitize_rich_text(str(item.get("description") or ""))
-+            values = (category_id, subcategory_id, item["name"], max(0, int(item.get("price") or 0)), description, json.dumps(images, ensure_ascii=False), 1)
-+            if local_id:
-+                db.execute("UPDATE products SET category_id=?,subcategory_id=?,name=?,price=?,description_html=?,images_json=?,active=? WHERE id=?", values + (local_id,)); updated += 1
-+            else:
-+                local_id = db.execute("INSERT INTO products(category_id,subcategory_id,name,price,description_html,images_json,active) VALUES(?,?,?,?,?,?,?)", values); created += 1
-+            self.save_map("product", source_id, local_id)
-+            used_product_ids.add(local_id)
-+            if index == total or index % 50 == 0: self.progress("Товары", index, total)
-+
-+        return {"categories": len(categories), "subcategories": len(subcategories), "products": total,
-+                "created": created, "updated": updated, "skipped": skipped, "image_errors": self.image_errors}
-+
-+
-+def main():
-+    importer = CatalogImporter(progress=lambda phase, done, total: print(f"{phase}: {done}/{total}", flush=True))
-+    print(json.dumps(importer.import_all(), ensure_ascii=False, indent=2))
-+
-+
-+if __name__ == "__main__":
-+    main()
+diff --git a/source/pre-review-import/README.md b/README.md
+index 1594fc7..4ef02c0 100644
+--- a/source/pre-review-import/README.md
++++ b/README.md
+@@ -29,6 +29,7 @@
+ - несколько чатов логов с включением/выключением: новые пользователи, заказы, категории, товары, отзывы и действия администраторов;
+ - управление администраторами по Telegram ID или username прямо из настроек бота.
+ - массовый импорт категорий, подкатегорий, товаров и до 10 фотографий товара с `bunkerguns.pro`.
++- импорт отзывов вместе с фотографиями и видео из раздела `/admin` → «Отзывы».
+ 
+ Для переноса каталога откройте `/admin` → «Управление товарами» → «Импортировать каталог». Повторный запуск синхронизирует названия, цены, описания и фотографии без создания дублей.
+ По умолчанию фотографии подключаются по исходным HTTPS-адресам, поэтому Railway Volume не раздувается на тысячи файлов. Для полной локальной копии изображений задайте `IMPORT_MIRROR_IMAGES=1`; уже скачанные файлы повторно не загружаются.

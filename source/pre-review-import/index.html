@@ -2198,9 +2198,8 @@ body::after{
   function operatorMessageUrl(text) {
     try {
       const url = new URL(OPERATOR_URL);
-      url.searchParams.delete('text');
-      const base = url.toString();
-      return base + (url.search ? '&' : '?') + 'text=' + encodeURIComponent(text);
+      url.searchParams.set('text', text);
+      return url.toString();
     } catch (_) {
       return OPERATOR_URL + (OPERATOR_URL.includes('?') ? '&' : '?') + 'text=' + encodeURIComponent(text);
     }

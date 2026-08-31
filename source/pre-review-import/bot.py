@@ -74,7 +74,6 @@ class TelegramBot:
         self.admin_ids = {int(x["telegram_id"]) for x in db.rows("SELECT telegram_id FROM admins")}
         self.captchas, self.sessions = {}, {}; self.offset = 0
         self.catalog_import_running = False
-        self.review_import_running = False
         self.webhook_secret = hashlib.sha256(self.token.encode()).hexdigest()[:32] if self.token else ""
         self.webhook_path = f"/telegram/webhook/{self.webhook_secret}" if self.webhook_secret else ""
 
@@ -174,29 +173,8 @@ class TelegramBot:
         if page > 0: nav.append(button("• Назад", f"adm:reviews:{page-1}", icon=ICONS["back"]))
         nav.append(button(f"{page+1}/{pages}", "noop"))
         if page + 1 < pages: nav.append(button("• Далее", f"adm:reviews:{page+1}", icon=ICONS["next"]))
-        rows += [nav, [button("• Добавить отзыв", "review:new", icon=ICONS["add"], style="success")], [button("• Импортировать отзывы", "review:import", icon=ICONS["refresh"])], [button("• В меню", "adm:home", icon=ICONS["back"])]]
+        rows += [nav, [button("• Добавить отзыв", "review:new", icon=ICONS["add"], style="success")], [button("• В меню", "adm:home", icon=ICONS["back"])]]
         self.panel(uid, f"<b>Отзывы</b>\n\nВсего: <b>{total}</b>", rows, callback)
-
-    def run_review_import(self, uid):
-        from .importer import CatalogImporter
-        last = {"phase": "", "done": -1}
-        def progress(phase, done, total):
-            if phase == last["phase"] and done != total and done - last["done"] < 50: return
-            last.update(phase=phase, done=done)
-            self.panel(uid, f"<b>Импорт отзывов •</b>\n\n{html.escape(phase)}: <b>{done}/{total}</b>", [[button("• Назад", "adm:reviews:0", icon=ICONS["back"])]] )
-        try:
-            result = CatalogImporter(progress=progress).import_reviews()
-            text = ("<b>Отзывы импортированы •</b>\n\n"
-                    f"Получено: <b>{result['reviews']}</b>\n"
-                    f"Добавлено: <b>{result['created']}</b>\n"
-                    f"Обновлено: <b>{result['updated']}</b>\n"
-                    f"Ошибок медиа: <b>{result['image_errors']}</b>")
-            self.panel(uid, text, [[button("• К отзывам", "adm:reviews:0", icon=ICONS["star"])]] )
-            self.log_event("Отзывы импортированы", text, uid)
-        except Exception as exc:
-            self.panel(uid, f"<b>Ошибка импорта отзывов •</b>\n\n<code>{html.escape(str(exc))}</code>", [[button("• Назад", "adm:reviews:0", icon=ICONS["back"])]] )
-        finally:
-            self.review_import_running = False
 
     def review_editor(self, uid, callback, rid):
         review = db.row("SELECT * FROM reviews WHERE id=?", (rid,))
@@ -430,13 +408,6 @@ class TelegramBot:
         if data=="review:new":
             rows=[[button(f"• {n} звезд",f"review:stars:{n}",icon=ICONS["star"])] for n in range(1,6)]+[[button("• Назад","adm:reviews:0",icon=ICONS["back"])]]
             return self.panel(uid,"<b>Новый отзыв</b>\n\nВыберите оценку от 1 до 5:",rows,callback)
-        if data=="review:import":
-            if self.review_import_running:
-                return self.panel(uid,"<b>Импорт отзывов •</b>\n\nИмпорт уже выполняется.",[[button("• Назад","adm:reviews:0",icon=ICONS["back"]) ]],callback)
-            self.review_import_running=True
-            self.panel(uid,"<b>Импорт отзывов •</b>\n\nПодключаюсь к источнику…",[[button("• Назад","adm:reviews:0",icon=ICONS["back"]) ]],callback)
-            threading.Thread(target=self.run_review_import,args=(uid,),daemon=True,name="review-import").start()
-            return
         if data.startswith("review:stars:"):
             stars=max(1,min(5,int(data.rsplit(":",1)[1])))
             return self.prompt(uid,callback,"review_text","Отправьте текст отзыва. Жирный, курсив и Premium Emoji сохранятся автоматически.","adm:reviews:0",review_stars=stars)

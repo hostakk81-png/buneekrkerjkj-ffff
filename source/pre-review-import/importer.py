@@ -192,42 +192,6 @@ class CatalogImporter:
         return {"categories": len(categories), "subcategories": len(subcategories), "products": total,
                 "created": created, "updated": updated, "skipped": skipped, "image_errors": self.image_errors}
 
-    def import_reviews(self):
-        db.init_db()
-        from .server import sanitize_rich_text
-        self.progress("Получение отзывов", 0, 1)
-        reviews = self.fetch_json("/api/reviews")
-        media_values = []
-        for item in reviews:
-            media_values.extend((item.get("images") or ([item.get("image")] if item.get("image") else []))[:10])
-            media_values.extend((item.get("videos") or [])[:10])
-        downloaded = self.download_many(media_values)
-
-        created = updated = 0
-        used_review_ids = set()
-        total = len(reviews)
-        for index, item in enumerate(reviews, 1):
-            source_id = str(item["id"])
-            local_id = self.source_map("review", source_id)
-            if local_id in used_review_ids:
-                local_id = None
-            images = [downloaded.get(url, self.media_url(url)) for url in (item.get("images") or ([item.get("image")] if item.get("image") else []))[:10]]
-            videos = [downloaded.get(url, self.media_url(url)) for url in (item.get("videos") or [])[:10]]
-            values = (int(item.get("userId") or 0), sanitize_rich_text(str(item.get("text") or "")),
-                      max(1, min(5, int(item.get("stars") or 5))), json.dumps(images, ensure_ascii=False),
-                      json.dumps(videos, ensure_ascii=False), 1, str(item.get("created_at") or ""))
-            if local_id:
-                db.execute("UPDATE reviews SET user_id=?,text=?,stars=?,images_json=?,videos_json=?,active=?,created_at=COALESCE(NULLIF(?,''),created_at) WHERE id=?", values + (local_id,))
-                updated += 1
-            else:
-                local_id = db.execute("INSERT INTO reviews(user_id,text,stars,images_json,videos_json,active,created_at) VALUES(?,?,?,?,?,?,COALESCE(NULLIF(?,''),CURRENT_TIMESTAMP))", values)
-                created += 1
-            self.save_map("review", source_id, local_id)
-            used_review_ids.add(local_id)
-            if index == total or index % 50 == 0:
-                self.progress("Отзывы", index, total)
-        return {"reviews": total, "created": created, "updated": updated, "image_errors": self.image_errors}
-
 
 def main():
     importer = CatalogImporter(progress=lambda phase, done, total: print(f"{phase}: {done}/{total}", flush=True))

@@ -82,8 +82,6 @@ class AppTests(unittest.TestCase):
         self.assertIn("localStorage.setItem(DELIVERY_DATA_KEY", text)
         self.assertIn("const tgUrl = operatorMessageUrl(msgText)", text)
         self.assertIn("const url = operatorMessageUrl(msg)", text)
-        self.assertNotIn("url.searchParams.set('text', text)", text)
-        self.assertIn("'text=' + encodeURIComponent(text)", text)
         self.assertIn("stars(r.stars)", text)
         load_block = text[text.index("async function loadCategories"):text.index("function pluralItems")]
         self.assertNotIn("apiFetch('/api/products')", load_block)
@@ -176,32 +174,6 @@ class AppTests(unittest.TestCase):
         db.execute("DELETE FROM subcategories WHERE name='Пистолеты'")
         db.execute("DELETE FROM categories WHERE name='Импорт'")
         db.execute("DELETE FROM import_sources WHERE source_base='https://fixture.example'")
-
-    def test_review_import_button_and_idempotent_import(self):
-        bot = FakeBot(); bot.admin_ids = {1}; bot.reviews_page(1)
-        sent = [p for m,p in bot.calls if m == "sendMessage"][-1]
-        callbacks = [b.get("callback_data") for row in sent["reply_markup"]["inline_keyboard"] for b in row]
-        self.assertIn("review:import", callbacks)
-
-        class FixtureReviewImporter(CatalogImporter):
-            def fetch_json(self, path):
-                self.assert_path = path
-                return [{"id":"r1","userId":42,"text":"<b>Отлично</b><script>x</script>","images":["/review.jpg"],"videos":["/review.mp4"],"created_at":"2026-08-28T10:43:17Z"}]
-            def download_many(self, urls):
-                return {url: "https://fixture.example" + url for url in urls}
-
-        importer = FixtureReviewImporter(source="https://fixture.example")
-        first = importer.import_reviews(); second = importer.import_reviews()
-        self.assertEqual(first["created"], 1)
-        self.assertEqual(second["created"], 0)
-        self.assertEqual(second["updated"], 1)
-        review = db.row("SELECT * FROM reviews WHERE user_id=42")
-        self.assertEqual(review["text"], "<b>Отлично</b>")
-        self.assertEqual(review["stars"], 5)
-        self.assertEqual(json.loads(review["images_json"]), ["https://fixture.example/review.jpg"])
-        self.assertEqual(json.loads(review["videos_json"]), ["https://fixture.example/review.mp4"])
-        db.execute("DELETE FROM reviews WHERE id=?", (review["id"],))
-        db.execute("DELETE FROM import_sources WHERE source_base='https://fixture.example' AND entity_type='review'")
 
     def test_category_requires_photo_and_review_supports_stars_rich_text_photo(self):
         bot = FakeBot(); bot.admin_ids = {1}
