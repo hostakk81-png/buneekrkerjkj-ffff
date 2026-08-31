@@ -1,59 +1,53 @@
-BUNKER GUNS — VERIFICATION
-Date: 2026-08-31 Asia/Tashkent
+TARGET: BUNKER GUNS catalog importer
+CHANGED_BRANCH: main
+CHANGED_FIELD: Telegram /admin -> Управление товарами -> callback catalog:import; SQLite import_sources mapping; 707-product sync from https://bunkerguns.pro
 
-Changed branch/field:
-- Telegram branch: send_captcha(chat_id).
-- Removed deletion of last_captcha and removal of earlier captcha nonce records.
-- Every /start now adds a separate new captcha; earlier captcha messages and their callback state remain.
-- Successful selection still deletes only the captcha message that was actually solved.
-
-Four artifacts:
+ARTIFACTS:
 MODIFIED_FILE=C:\Users\nolyk\Desktop\шоп\app\bot.py
 DIFF_FILE=C:\Users\nolyk\Desktop\шоп\MODIFICATIONS.diff
-VERIFICATION_FILE=C:\Users\nolyk\Desktop\шоп\VERIFICATION.txt
-ROLLBACK_FILE=C:\Users\nolyk\Desktop\шоп\ROLLBACK.sh
+VERIFICATION=C:\Users\nolyk\Desktop\шоп\VERIFICATION.txt
+ROLLBACK=C:\Users\nolyk\Desktop\шоп\ROLLBACK.sh
 
-Hashes:
-ORIGINAL app/bot.py SHA256=654607B4E2D1B2C73C193034E474BA6E0ADE096F2C9DA41ED36100A16D86D72D
-MODIFIED app/bot.py SHA256=AE73AEE670F16891248E51EE93A2DBA6DB57F015B2BF7F77A74F7187E452001B
-DIFF SHA256=8A86B06CC1A25BEDE4D923137966E30F93845CCA9EABECC5EB5BE4FD1EA58764
+ORIGINAL:
+C:\Users\nolyk\Desktop\шоп\source\pre-catalog-import\bot.py
+SHA256=AE73AEE670F16891248E51EE93A2DBA6DB57F015B2BF7F77A74F7187E452001B
+C:\Users\nolyk\Desktop\шоп\source\pre-catalog-import\shop.db
+SHA256=0BEE0173774857FFDA021AF9E14933AEBB12182F438B5C5D2ACC032D6C486CC9
 
-BASELINE
-Command: python -B -m unittest -v tests.test_app
-Input: pre-change files with isolated temporary SQLite
-Literal output/result:
-Ran 15 tests in 0.881s
-OK
-Exit status: 0
-Observed baseline: test_each_start_replaces_captcha expected deleteMessage for the previous captcha.
+MODIFIED:
+C:\Users\nolyk\Desktop\шоп\app\bot.py
+SHA256=03DACC26D92A3E903B8B4799BA2497CC5BC29E7CCF1466F4E9242B00D453D535
+C:\Users\nolyk\Desktop\шоп\app\importer.py
+SHA256=7E3AD16636500E35B4AF4E71BB8CB8339C480AB361E3461FD2465B28D605BF24
+C:\Users\nolyk\Desktop\шоп\data\shop.db
+SHA256=4139910E0100DCD4CD6D9B91DC6061B541BFF62E46F7EB9BA41502E2ED6D2237
 
-MODIFIED
-Command: python -B -m unittest -v tests.test_app
-Input: two consecutive /start messages for one chat, isolated temporary SQLite
-Literal output/result:
-test_each_start_adds_captcha_without_deleting_previous ... ok
-Ran 15 tests in 0.953s
-OK
-Exit status: 0
-Observed result: two distinct captcha nonces remain stored, a new captcha is sent, and no deleteMessage call occurs on the second /start.
+BASELINE:
+COMMAND: python -B -m unittest -v tests.test_app
+INPUT: pre-import snapshots from source/pre-catalog-import
+LITERAL RESULT: Ran 15 tests in 0.881s / OK
+EXIT STATUS: 0
 
-LIVE
-Command: python -B run.py
-Input: modified application, config.json, preserved data/shop.db
-Literal output/result:
-BUNKER GUNS: http://127.0.0.1:8080
-TELEGRAM: webhook
-SQLITE: C:\Users\nolyk\Desktop\шоп\data\shop.db
-Exit status: running (session 28788)
+MODIFIED TEST:
+COMMAND: & 'C:\Program Files\PostgreSQL\18\pgAdmin 4\python\python.exe' -B -c "import sys,unittest; sys.path.insert(0,'.'); suite=unittest.defaultTestLoader.discover('tests'); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())"
+INPUT: current app/bot.py, app/db.py, app/importer.py, tests/test_app.py
+LITERAL RESULT: Ran 16 tests in 0.913s / OK
+EXIT STATUS: 0
 
-ROLLBACK
-Command: bash ROLLBACK.sh source/pre-captcha-stack/bot.py <temporary-copy>/bot.py
-Input: another copy of modified app/bot.py
-Literal output/result:
-ROLLBACK_EXIT=0
-ROLLBACK_COPY_HASH=654607B4E2D1B2C73C193034E474BA6E0ADE096F2C9DA41ED36100A16D86D72D
-BASELINE_HASH=654607B4E2D1B2C73C193034E474BA6E0ADE096F2C9DA41ED36100A16D86D72D
-ROLLBACK_MATCH=True
-ROLLBACK_SYNTAX_EXIT=0
-Exit status: 0
-Restored behavior/status: rollback copy restores replacement/deletion of the previous captcha; working MODIFIED_FILE remains changed and live with captcha accumulation enabled.
+CATALOG IMPORT:
+COMMAND: & 'C:\Program Files\PostgreSQL\18\pgAdmin 4\python\python.exe' -B -c "import sys;sys.path.insert(0,'.');from app.importer import main;main()"
+INPUT: https://bunkerguns.pro/api/categories, /api/subcategories, /api/products and subcategory product endpoints
+LITERAL RESULT: categories=14; subcategories=12; products=707; created=0; updated=707; skipped=0; image_errors=0
+EXIT STATUS: 0
+IDEMPOTENCE: second/final sync created=0 and updated=707; 707 source mappings point to 707 distinct local products.
+DATABASE RESULT: 15 total categories, 12 subcategories, 708 total products (the previous local category/product were preserved), 706 products with images.
+MEDIA RESULT: 2169 source product photo references; 430 local cached references and 1739 HTTPS references. IMPORT_MIRROR_IMAGES=1 mirrors remaining images into persistent uploads.
+API RESULT: GET /api/categories -> HTTP 200, 15 categories; GET /api/products -> HTTP 200, 708 products; products_with_images=706.
+
+ROLLBACK TEST:
+COMMAND: & 'C:\Program Files\Git\bin\bash.exe' './ROLLBACK.sh' './source/pre-catalog-import/bot.py' './rollback-test-bot.py'
+INPUT: another copy of modified app/bot.py
+LITERAL OUTPUT: ROLLBACK_OK: supplied copy restored
+LITERAL RESULT: expected=AE73AEE670F16891248E51EE93A2DBA6DB57F015B2BF7F77A74F7187E452001B; actual=AE73AEE670F16891248E51EE93A2DBA6DB57F015B2BF7F77A74F7187E452001B; match=True
+EXIT STATUS: 0
+RESTORED BEHAVIOR/STATUS: the test copy no longer contains catalog:import and exactly matches the pre-import bot. The working MODIFIED_FILE remains changed. ROLLBACK.sh restores code by default; --with-data additionally restores the pre-import SQLite snapshot.

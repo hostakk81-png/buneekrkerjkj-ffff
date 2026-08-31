@@ -81,14 +81,6 @@ CREATE TABLE IF NOT EXISTS admins (
   added_by INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS import_sources (
-  source_base TEXT NOT NULL,
-  entity_type TEXT NOT NULL,
-  source_id TEXT NOT NULL,
-  local_id INTEGER NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY(source_base, entity_type, source_id)
-);
 CREATE TABLE IF NOT EXISTS admin_dialogs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,

@@ -73,7 +73,6 @@ class TelegramBot:
             for admin_id in configured_admins: db.execute("INSERT OR IGNORE INTO admins(telegram_id) VALUES(?)", (admin_id,))
         self.admin_ids = {int(x["telegram_id"]) for x in db.rows("SELECT telegram_id FROM admins")}
         self.captchas, self.sessions = {}, {}; self.offset = 0
-        self.catalog_import_running = False
         self.webhook_secret = hashlib.sha256(self.token.encode()).hexdigest()[:32] if self.token else ""
         self.webhook_path = f"/telegram/webhook/{self.webhook_secret}" if self.webhook_secret else ""
 
@@ -189,37 +188,8 @@ class TelegramBot:
     def product_categories(self, uid, callback=None):
         cats = db.rows("SELECT c.*,(SELECT count(*) FROM products p WHERE p.category_id=c.id) count FROM categories c ORDER BY sort_order,id")
         rows = [[button(f"• {c['name']} · {c['count']}", f"prod:list:{c['id']}:0", icon=ICONS["category"])] for c in cats]
-        rows += [[button("• Добавить категорию", "cat:new", icon=ICONS["add"], style="success")], [button("• Управление категориями", "cat:list", icon=ICONS["category"])], [button("• Импортировать каталог", "catalog:import", icon=ICONS["refresh"])], [button("• Назад", "adm:home", icon=ICONS["back"])]]
+        rows += [[button("• Добавить категорию", "cat:new", icon=ICONS["add"], style="success")], [button("• Управление категориями", "cat:list", icon=ICONS["category"])], [button("• Назад", "adm:home", icon=ICONS["back"])]]
         self.panel(uid, "<b>Управление товарами •</b>\n\nВыберите категорию:", rows, callback)
-
-    def run_catalog_import(self, uid):
-        from .importer import CatalogImporter
-        last = {"phase": "", "done": -1}
-
-        def progress(phase, done, total):
-            # Не редактируем сообщение на каждой фотографии: Telegram ограничивает частоту запросов.
-            if phase == last["phase"] and done != total and done - last["done"] < 100:
-                return
-            last.update(phase=phase, done=done)
-            self.panel(uid, f"<b>Импорт каталога •</b>\n\n{html.escape(phase)}: <b>{done}/{total}</b>\n\nМожно закрыть панель — импорт продолжится.",
-                       [[button("• Назад", "adm:products", icon=ICONS["back"])]] )
-
-        try:
-            result = CatalogImporter(progress=progress).import_all()
-            text = ("<b>Каталог импортирован •</b>\n\n"
-                    f"Категорий: <b>{result['categories']}</b>\n"
-                    f"Подкатегорий: <b>{result['subcategories']}</b>\n"
-                    f"Товаров: <b>{result['products']}</b>\n"
-                    f"Добавлено: <b>{result['created']}</b>\n"
-                    f"Обновлено: <b>{result['updated']}</b>\n"
-                    f"Ошибок фото: <b>{result['image_errors']}</b>")
-            self.panel(uid, text, [[button("• К товарам", "adm:products", icon=ICONS["products"])]])
-            self.log_event("Каталог импортирован", text, uid)
-        except Exception as exc:
-            self.panel(uid, f"<b>Ошибка импорта •</b>\n\n<code>{html.escape(str(exc))}</code>",
-                       [[button("• Назад", "adm:products", icon=ICONS["back"])]] )
-        finally:
-            self.catalog_import_running = False
 
     def category_list(self, uid, callback=None):
         cats = db.rows("SELECT * FROM categories ORDER BY sort_order,id"); rows = [[button(f"• {c['name']} · изменить", f"cat:open:{c['id']}", icon=ICONS["category"])] for c in cats]
@@ -356,13 +326,6 @@ class TelegramBot:
         s.pop("mode", None)
         routes={"adm:home":lambda:self.admin_home(uid,callback),"adm:products":lambda:self.product_categories(uid,callback),"adm:stats":lambda:self.stats(uid,callback),"adm:broadcast":lambda:self.broadcast_menu(uid,callback),"adm:settings":lambda:self.settings_menu(uid,callback),"cat:list":lambda:self.category_list(uid,callback),"set:channels":lambda:self.channels_menu(uid,callback),"set:logs":lambda:self.logs_menu(uid,callback),"set:admins":lambda:self.admins_menu(uid,callback)}
         if data in routes:return routes[data]()
-        if data=="catalog:import":
-            if self.catalog_import_running:
-                return self.panel(uid,"<b>Импорт каталога •</b>\n\nИмпорт уже выполняется.",[[button("• Назад","adm:products",icon=ICONS["back"]) ]],callback)
-            self.catalog_import_running=True
-            self.panel(uid,"<b>Импорт каталога •</b>\n\nПодключаюсь к источнику…",[[button("• Назад","adm:products",icon=ICONS["back"]) ]],callback)
-            threading.Thread(target=self.run_catalog_import,args=(uid,),daemon=True,name="catalog-import").start()
-            return
         if data.startswith("adm:users:"):return self.users_page(uid,callback,int(data.rsplit(":",1)[1]))
         if data.startswith("adm:reviews:"):return self.reviews_page(uid,callback,int(data.rsplit(":",1)[1]))
         if data=="cat:new":return self.prompt(uid,callback,"cat_new_name","Отправьте название новой категории.","cat:list")

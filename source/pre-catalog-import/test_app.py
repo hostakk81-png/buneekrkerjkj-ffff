@@ -12,7 +12,6 @@ from pathlib import Path
 from app import db
 from app import server as server_module
 from app.bot import ICONS, TelegramBot, button, entities_to_html
-from app.importer import CatalogImporter
 from app.server import make_server, sanitize_rich_text
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,39 +141,6 @@ class AppTests(unittest.TestCase):
                 self.assertTrue(item["text"].startswith("• "))
                 self.assertIn("icon_custom_emoji_id", item)
 
-    def test_catalog_import_button_and_idempotent_import(self):
-        bot = FakeBot(); bot.admin_ids = {1}; bot.product_categories(1)
-        sent = [p for m,p in bot.calls if m == "sendMessage"][-1]
-        callbacks = [b.get("callback_data") for row in sent["reply_markup"]["inline_keyboard"] for b in row]
-        self.assertIn("catalog:import", callbacks)
-
-        class FixtureImporter(CatalogImporter):
-            def fetch_json(self, path):
-                if path == "/api/categories": return [{"id":"c1","name":"Импорт","image":"/c.jpg"}]
-                if path == "/api/subcategories": return [{"id":"s1","categoryId":"c1","name":"Пистолеты","image":"/s.jpg"}]
-                if path == "/api/products": return [{"id":"p1","categoryId":"c1","name":"Модель","price":100,"description":"<b>Тест</b><script>x</script>","images":["/1.jpg","/2.jpg"]},{"id":"p2","categoryId":"c1","name":"Модель","price":200,"description":"Дубль названия","images":["/3.jpg"]}]
-                if path.startswith("/api/products?subcategoryId="): return [{"id":"p1"},{"id":"p2"}]
-                raise AssertionError(path)
-            def download_many(self, urls):
-                return {url: "/uploads/fixture-" + Path(url).name for url in urls}
-
-        importer = FixtureImporter(source="https://fixture.example")
-        first = importer.import_all(); second = importer.import_all()
-        self.assertEqual(first["created"], 2)
-        self.assertEqual(second["created"], 0)
-        self.assertEqual(second["updated"], 2)
-        products = db.rows("SELECT * FROM products WHERE name='Модель' ORDER BY price")
-        product = products[0]
-        subcategory = db.row("SELECT * FROM subcategories WHERE name='Пистолеты'")
-        self.assertEqual(len(products), 2)
-        self.assertEqual(product["subcategory_id"], subcategory["id"])
-        self.assertEqual(len(json.loads(product["images_json"])), 2)
-        self.assertEqual(product["description_html"], "<b>Тест</b>")
-        db.execute("DELETE FROM products WHERE name='Модель'")
-        db.execute("DELETE FROM subcategories WHERE name='Пистолеты'")
-        db.execute("DELETE FROM categories WHERE name='Импорт'")
-        db.execute("DELETE FROM import_sources WHERE source_base='https://fixture.example'")
-
     def test_category_requires_photo_and_review_supports_stars_rich_text_photo(self):
         bot = FakeBot(); bot.admin_ids = {1}
         before = db.row("SELECT count(*) n FROM categories")["n"]
@@ -265,7 +231,7 @@ class AppTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as volume:
             env = os.environ.copy(); env["RAILWAY_VOLUME_MOUNT_PATH"] = volume
             result = subprocess.run(
-                [sys.executable, "-B", "-c", "import sys;sys.path.insert(0,'.');from app.storage import DB_PATH,UPLOADS_DIR;print(DB_PATH);print(UPLOADS_DIR)"],
+                [sys.executable, "-B", "-c", "from app.storage import DB_PATH,UPLOADS_DIR; print(DB_PATH); print(UPLOADS_DIR)"],
                 cwd=ROOT, env=env, text=True, capture_output=True, check=True
             ).stdout.splitlines()
             self.assertEqual(Path(result[0]), Path(volume).resolve() / "shop.db")
